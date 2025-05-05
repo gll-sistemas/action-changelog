@@ -82,121 +82,236 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
   info(`🔍 [CHANGELOG] Current SHA: ${sha()}`);
   info(`🔍 [CHANGELOG] Previous SHA (lastSha): ${lastSha || "none"}`);
 
-  const iterator = paginate.iterator(
-    rest.repos.listCommits,
-    {
-      per_page: 100,
-      sha     : sha(),
-      owner,
-      repo,
-    },
-  );
-
-  info(`🔍 [CHANGELOG] Fetching commits between current SHA and lastSha`);
   const typeGroups: TypeGroupI[] = [];
-
   let commitCount = 0;
   let processedCommitCount = 0;
 
-  paginator: for await (const { data } of iterator) {
-    for (const commit of data) {
-      commitCount++;
+  // If we have a lastSha, use compareCommits to get commits between the two SHAs
+  if (lastSha) {
+    info(`🔍 [CHANGELOG] Using compare API to fetch commits between ${lastSha.substring(0, 7)} and ${sha().substring(0, 7)}`);
 
-      if (commit.sha === lastSha) {
-        info(`🔍 [CHANGELOG] Found lastSha commit, stopping commit processing`);
-        break paginator;
-      }
+    try {
+      // Get commits using the compare API - this ensures we only get commits between the two SHAs
+      const compareResult = await rest.repos.compareCommits({
+        owner,
+        repo,
+        base: lastSha,
+        head: sha(),
+      });
 
-      const message = commit.commit.message.split("\n")[0];
+      info(`🔍 [CHANGELOG] Found ${compareResult.data.commits.length} commits between the two SHAs`);
 
-      debug(`commit message -> ${ message }`);
+      // Process each commit from the comparison
+      for (const commit of compareResult.data.commits) {
+        commitCount++;
 
-      let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
+        const message = commit.commit.message.split("\n")[0];
+        debug(`commit message -> ${ message }`);
 
-      if (!description) {
-        info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: No description`);
-        continue;
-      }
+        let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
 
-      description = trim(description);
-
-      flag = trim(flag);
-
-      if (flag === "ignore") {
-        info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: Flagged as ignore`);
-        continue;
-      }
-
-      processedCommitCount++;
-
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      type = typeMap[trim(type ?? "")] ?? defaultType;
-
-      // Logging for every 10th commit to avoid excessive logs
-      if (processedCommitCount % 10 === 0 || processedCommitCount < 5) {
-        info(`🔍 [CHANGELOG] Processing commit ${commit.sha.substring(0, 7)}: ${type}${scope ? `(${scope})` : ""}: ${description}`);
-      }
-
-      let typeGroup = typeGroups.find(record => record.type === type);
-
-      if (typeGroup == null) {
-        typeGroup = {
-          type,
-          scopes: [],
-        };
-
-        typeGroups.push(typeGroup);
-      }
-
-      scope = trim(scope ?? "");
-
-      let scopeGroup = typeGroup.scopes.find(record => record.scope === scope);
-
-      if (scopeGroup == null) {
-        scopeGroup = {
-          scope,
-          logs: [],
-        };
-
-        typeGroup.scopes.push(scopeGroup);
-      }
-
-      let log = scopeGroup.logs.find(record => record.description === description);
-
-      if (log == null) {
-        log = {
-          breaking,
-          description,
-          references: [],
-        };
-
-        scopeGroup.logs.push(log);
-      }
-
-      const reference: string[] = [];
-
-      if (pr && shouldIncludePRLinks) reference.push(shouldUseGithubAutolink ? `#${ pr }` : `[#${ pr }](${ url }/issues/${ pr })`);
-      else if (shouldIncludeCommitLinks) reference.push(shouldUseGithubAutolink ? commit.sha : `\`[${ commit.sha }](${ url }/commit/${ commit.sha })\``);
-
-      const username = commit.author?.login;
-
-      if (username && shouldMentionAuthors) {
-        const mention = `by @${ username }`;
-
-        reference.push(mention);
-
-        const lastReference = log.references[log.references.length - 1];
-
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (lastReference?.endsWith(mention)) {
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-          log.references.push(log.references.pop()!.replace(mention, `& ${ reference.join(" ") }`));
-
+        if (!description) {
+          info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: No description`);
           continue;
         }
-      }
 
-      if (reference.length > 0) log.references.push(reference.join(" "));
+        description = trim(description);
+        flag = trim(flag);
+
+        if (flag === "ignore") {
+          info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: Flagged as ignore`);
+          continue;
+        }
+
+        processedCommitCount++;
+
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        type = typeMap[trim(type ?? "")] ?? defaultType;
+
+        // Logging for every 10th commit to avoid excessive logs
+        if (processedCommitCount % 10 === 0 || processedCommitCount < 5) {
+          info(`🔍 [CHANGELOG] Processing commit ${commit.sha.substring(0, 7)}: ${type}${scope ? `(${scope})` : ""}: ${description}`);
+        }
+
+        let typeGroup = typeGroups.find(record => record.type === type);
+
+        if (typeGroup == null) {
+          typeGroup = {
+            type,
+            scopes: [],
+          };
+
+          typeGroups.push(typeGroup);
+        }
+
+        scope = trim(scope ?? "");
+
+        let scopeGroup = typeGroup.scopes.find(record => record.scope === scope);
+
+        if (scopeGroup == null) {
+          scopeGroup = {
+            scope,
+            logs: [],
+          };
+
+          typeGroup.scopes.push(scopeGroup);
+        }
+
+        let log = scopeGroup.logs.find(record => record.description === description);
+
+        if (log == null) {
+          log = {
+            breaking,
+            description,
+            references: [],
+          };
+
+          scopeGroup.logs.push(log);
+        }
+
+        const reference: string[] = [];
+
+        if (pr && shouldIncludePRLinks) reference.push(shouldUseGithubAutolink ? `#${ pr }` : `[#${ pr }](${ url }/issues/${ pr })`);
+        else if (shouldIncludeCommitLinks) reference.push(shouldUseGithubAutolink ? commit.sha : `\`[${ commit.sha }](${ url }/commit/${ commit.sha })\``);
+
+        const username = commit.author?.login;
+
+        if (username && shouldMentionAuthors) {
+          const mention = `by @${ username }`;
+
+          reference.push(mention);
+
+          const lastReference = log.references[log.references.length - 1];
+
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          if (lastReference?.endsWith(mention)) {
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+            log.references.push(log.references.pop()!.replace(mention, `& ${ reference.join(" ") }`));
+
+            continue;
+          }
+        }
+
+        if (reference.length > 0) log.references.push(reference.join(" "));
+      }
+    } catch (error) {
+      info(`🔍 [CHANGELOG] Error using compare API: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else {
+    info(`🔍 [CHANGELOG] No previous SHA found, fetching all commits from current SHA`);
+
+    const iterator = paginate.iterator(
+      rest.repos.listCommits,
+      {
+        per_page: 100,
+        sha     : sha(),
+        owner,
+        repo,
+      },
+    );
+
+    info(`🔍 [CHANGELOG] Fetching commits between current SHA and lastSha`);
+
+    paginator: for await (const { data } of iterator) {
+      for (const commit of data) {
+        commitCount++;
+
+        if (commit.sha === lastSha) {
+          info(`🔍 [CHANGELOG] Found lastSha commit, stopping commit processing`);
+          break paginator;
+        }
+
+        const message = commit.commit.message.split("\n")[0];
+
+        debug(`commit message -> ${ message }`);
+
+        let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
+
+        if (!description) {
+          info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: No description`);
+          continue;
+        }
+
+        description = trim(description);
+
+        flag = trim(flag);
+
+        if (flag === "ignore") {
+          info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: Flagged as ignore`);
+          continue;
+        }
+
+        processedCommitCount++;
+
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        type = typeMap[trim(type ?? "")] ?? defaultType;
+
+        // Logging for every 10th commit to avoid excessive logs
+        if (processedCommitCount % 10 === 0 || processedCommitCount < 5) {
+          info(`🔍 [CHANGELOG] Processing commit ${commit.sha.substring(0, 7)}: ${type}${scope ? `(${scope})` : ""}: ${description}`);
+        }
+
+        let typeGroup = typeGroups.find(record => record.type === type);
+
+        if (typeGroup == null) {
+          typeGroup = {
+            type,
+            scopes: [],
+          };
+
+          typeGroups.push(typeGroup);
+        }
+
+        scope = trim(scope ?? "");
+
+        let scopeGroup = typeGroup.scopes.find(record => record.scope === scope);
+
+        if (scopeGroup == null) {
+          scopeGroup = {
+            scope,
+            logs: [],
+          };
+
+          typeGroup.scopes.push(scopeGroup);
+        }
+
+        let log = scopeGroup.logs.find(record => record.description === description);
+
+        if (log == null) {
+          log = {
+            breaking,
+            description,
+            references: [],
+          };
+
+          scopeGroup.logs.push(log);
+        }
+
+        const reference: string[] = [];
+
+        if (pr && shouldIncludePRLinks) reference.push(shouldUseGithubAutolink ? `#${ pr }` : `[#${ pr }](${ url }/issues/${ pr })`);
+        else if (shouldIncludeCommitLinks) reference.push(shouldUseGithubAutolink ? commit.sha : `\`[${ commit.sha }](${ url }/commit/${ commit.sha })\``);
+
+        const username = commit.author?.login;
+
+        if (username && shouldMentionAuthors) {
+          const mention = `by @${ username }`;
+
+          reference.push(mention);
+
+          const lastReference = log.references[log.references.length - 1];
+
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          if (lastReference?.endsWith(mention)) {
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+            log.references.push(log.references.pop()!.replace(mention, `& ${ reference.join(" ") }`));
+
+            continue;
+          }
+        }
+
+        if (reference.length > 0) log.references.push(reference.join(" "));
+      }
     }
   }
 
