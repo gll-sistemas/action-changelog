@@ -23,7 +23,7 @@
  *
  */
 
-import { debug } from "@actions/core";
+import { debug, info } from "@actions/core";
 import {
   commitTypes,
   defaultCommitType,
@@ -78,6 +78,10 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
   const shouldMentionAuthors = mentionAuthors();
   const shouldUseGithubAutolink = useGithubAutolink();
 
+  info("[CHANGELOG DEBUG] Generating changelog");
+  info("[CHANGELOG DEBUG] Current SHA: " + sha());
+  info("[CHANGELOG DEBUG] Previous SHA (lastSha): " + (lastSha || "none"));
+
   const iterator = paginate.iterator(
     rest.repos.listCommits,
     {
@@ -88,11 +92,20 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
     },
   );
 
+  info("[CHANGELOG DEBUG] Fetching commits between current SHA and lastSha");
   const typeGroups: TypeGroupI[] = [];
+
+  let commitCount = 0;
+  let processedCommitCount = 0;
 
   paginator: for await (const { data } of iterator) {
     for (const commit of data) {
-      if (commit.sha === lastSha) break paginator;
+      commitCount++;
+
+      if (commit.sha === lastSha) {
+        info("[CHANGELOG DEBUG] Found lastSha commit, stopping commit processing");
+        break paginator;
+      }
 
       const message = commit.commit.message.split("\n")[0];
 
@@ -100,16 +113,29 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
 
       let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
 
-      if (!description) continue;
+      if (!description) {
+        info("[CHANGELOG DEBUG] Commit " + commit.sha.substring(0, 7) + " skipped: No description");
+        continue;
+      }
 
       description = trim(description);
 
       flag = trim(flag);
 
-      if (flag === "ignore") continue;
+      if (flag === "ignore") {
+        info("[CHANGELOG DEBUG] Commit " + commit.sha.substring(0, 7) + " skipped: Flagged as ignore");
+        continue;
+      }
+
+      processedCommitCount++;
 
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       type = typeMap[trim(type ?? "")] ?? defaultType;
+
+      // Logging for every 10th commit to avoid excessive logs
+      if (processedCommitCount % 10 === 0 || processedCommitCount < 5) {
+        info("[CHANGELOG DEBUG] Processing commit " + commit.sha.substring(0, 7) + ": " + type + (scope ? `(${scope})` : "") + ": " + description);
+      }
 
       let typeGroup = typeGroups.find(record => record.type === type);
 
@@ -206,6 +232,16 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
     }
 
     changelog.push("");
+  }
+
+  info("[CHANGELOG DEBUG] Changelog generation complete");
+  info("[CHANGELOG DEBUG] Commits analyzed: " + commitCount);
+  info("[CHANGELOG DEBUG] Commits included in changelog: " + processedCommitCount);
+
+  if (lastSha) {
+    info("[CHANGELOG DEBUG] Comparison: From SHA " + lastSha.substring(0, 7) + " to " + sha().substring(0, 7));
+  } else {
+    info("[CHANGELOG DEBUG] No previous SHA found for comparison, included all accessible commits");
   }
 
   return changelog.join("\n");
