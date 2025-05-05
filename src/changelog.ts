@@ -4,7 +4,7 @@
  * Copyright (c) 2020-2023 Ardalan Amini
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
+ * of this software and associated documentation (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
@@ -66,6 +66,44 @@ function unique(value: string[]): string[] {
 
 function sortBy<T>(array: T[], property: keyof T): T[] {
   return array.sort((a, b) => (a[property] as string).localeCompare(b[property] as string));
+}
+
+// Helper function to generate the final changelog string
+function formatChangelog(typeGroups: TypeGroupI[], typeMap: Record<string, string>, defaultType: string): string {
+  const types = unique(Object.values(typeMap).concat(defaultType));
+  const changelog: string[] = [];
+
+  for (const type of types) {
+    const typeGroup = typeGroups.find(log => log.type === type);
+
+    if (typeGroup == null) continue;
+
+    changelog.push(`## ${ type }`);
+
+    sortBy(typeGroup.scopes, "scope");
+
+    for (const { scope, logs } of typeGroup.scopes) {
+      let prefix = "";
+
+      if (scope.length > 0) {
+        changelog.push(`* **${ scope }:**`);
+
+        prefix = "  ";
+      }
+
+      for (const { breaking, description, references } of logs) {
+        let line = `${ prefix }* ${ breaking ? "***breaking:*** " : "" }${ description }`;
+
+        if (references.length > 0) line += ` (${ references.join(", ") })`;
+
+        changelog.push(line);
+      }
+    }
+
+    changelog.push("");
+  }
+
+  return changelog.join("\n");
 }
 
 export async function generateChangelog(lastSha?: string): Promise<string> {
@@ -195,60 +233,21 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
         if (reference.length > 0) log.references.push(reference.join(" "));
       }
 
-      // If we successfully got commits using the compare API, don't fall through to the legacy method
-      if (compareResult.data.commits.length > 0) {
-        info(`🔍 [CHANGELOG] Successfully used compare API to generate changelog`);
-        info(`🔍 [CHANGELOG] Changelog generation complete`);
-        info(`🔍 [CHANGELOG] Commits analyzed: ${commitCount}`);
-        info(`🔍 [CHANGELOG] Commits included in changelog: ${processedCommitCount}`);
-        info(`🔍 [CHANGELOG] Comparison: From SHA ${lastSha.substring(0, 7)} to ${sha().substring(0, 7)}`);
+      // If the compare API returned commits, use them and return immediately
+      info(`🔍 [CHANGELOG] Successfully used compare API to generate changelog with ${processedCommitCount} commits`);
+      info(`🔍 [CHANGELOG] Changelog generation complete`);
+      info(`🔍 [CHANGELOG] Commits analyzed: ${commitCount}`);
+      info(`🔍 [CHANGELOG] Commits included in changelog: ${processedCommitCount}`);
+      info(`🔍 [CHANGELOG] Comparison: From SHA ${lastSha.substring(0, 7)} to ${sha().substring(0, 7)}`);
 
-        const types = unique(Object.values(typeMap).concat(defaultType));
-        const changelog: string[] = [];
-
-        for (const type of types) {
-          const typeGroup = typeGroups.find(log => log.type === type);
-
-          if (typeGroup == null) continue;
-
-          changelog.push(`## ${ type }`);
-
-          sortBy(typeGroup.scopes, "scope");
-
-          for (const { scope, logs } of typeGroup.scopes) {
-            let prefix = "";
-
-            if (scope.length > 0) {
-              changelog.push(`* **${ scope }:**`);
-
-              prefix = "  ";
-            }
-
-            for (const { breaking, description, references } of logs) {
-              let line = `${ prefix }* ${ breaking ? "***breaking:*** " : "" }${ description }`;
-
-              if (references.length > 0) line += ` (${ references.join(", ") })`;
-
-              changelog.push(line);
-            }
-          }
-
-          changelog.push("");
-        }
-
-        return changelog.join("\n");
-      }
-
-      // If we get here, the compare API returned zero commits, which is unlikely unless the SHAs are the same
-      // We'll log this situation and fall through to the legacy method
-      info(`🔍 [CHANGELOG] Compare API returned zero commits, falling back to legacy method`);
+      return formatChangelog(typeGroups, typeMap, defaultType);
     } catch (error) {
       info(`🔍 [CHANGELOG] Error using compare API: ${error instanceof Error ? error.message : String(error)}`);
       info(`🔍 [CHANGELOG] Falling back to legacy list commits method`);
     }
   }
 
-  // Legacy method or fallback if compareCommits fails
+  // Legacy method or fallback if compareCommits fails or lastSha is not provided
   info(`🔍 [CHANGELOG] Using legacy method to fetch commits`);
 
   const iterator = paginate.iterator(
@@ -365,41 +364,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
     }
   }
 
-  const types = unique(Object.values(typeMap).concat(defaultType));
-
-  const changelog: string[] = [];
-
-  for (const type of types) {
-    const typeGroup = typeGroups.find(log => log.type === type);
-
-    if (typeGroup == null) continue;
-
-    changelog.push(`## ${ type }`);
-
-    sortBy(typeGroup.scopes, "scope");
-
-    for (const { scope, logs } of typeGroup.scopes) {
-      let prefix = "";
-
-      if (scope.length > 0) {
-        changelog.push(`* **${ scope }:**`);
-
-        prefix = "  ";
-      }
-
-      for (const { breaking, description, references } of logs) {
-        let line = `${ prefix }* ${ breaking ? "***breaking:*** " : "" }${ description }`;
-
-        if (references.length > 0) line += ` (${ references.join(", ") })`;
-
-        changelog.push(line);
-      }
-    }
-
-    changelog.push("");
-  }
-
-  info(`🔍 [CHANGELOG] Changelog generation complete`);
+  info(`🔍 [CHANGELOG] Changelog generation complete with legacy method`);
   info(`🔍 [CHANGELOG] Commits analyzed: ${commitCount}`);
   info(`🔍 [CHANGELOG] Commits included in changelog: ${processedCommitCount}`);
 
@@ -409,5 +374,5 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
     info(`🔍 [CHANGELOG] No previous SHA found for comparison, included all accessible commits`);
   }
 
-  return changelog.join("\n");
+  return formatChangelog(typeGroups, typeMap, defaultType);
 }
