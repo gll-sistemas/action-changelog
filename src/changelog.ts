@@ -23,7 +23,7 @@
  *
  */
 
-import { debug } from "@actions/core";
+import { debug, info } from "@actions/core";
 import {
   commitTypes,
   defaultCommitType,
@@ -78,9 +78,9 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
   const shouldMentionAuthors = mentionAuthors();
   const shouldUseGithubAutolink = useGithubAutolink();
 
-  console.log("🔍 [CHANGELOG] Generating changelog");
-  console.log("🔍 [CHANGELOG] Current SHA: " + sha());
-  console.log("🔍 [CHANGELOG] Previous SHA (lastSha): " + (lastSha || "none"));
+  info(`🔍 [CHANGELOG] Generating changelog`);
+  info(`🔍 [CHANGELOG] Current SHA: ${sha()}`);
+  info(`🔍 [CHANGELOG] Previous SHA (lastSha): ${lastSha || "none"}`);
 
   const iterator = paginate.iterator(
     rest.repos.listCommits,
@@ -92,7 +92,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
     },
   );
 
-  console.log("🔍 [CHANGELOG] Fetching commits between current SHA and lastSha");
+  info(`🔍 [CHANGELOG] Fetching commits between current SHA and lastSha`);
   const typeGroups: TypeGroupI[] = [];
 
   let commitCount = 0;
@@ -103,7 +103,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
       commitCount++;
 
       if (commit.sha === lastSha) {
-        console.log("🔍 [CHANGELOG] Found lastSha commit, stopping commit processing");
+        info(`🔍 [CHANGELOG] Found lastSha commit, stopping commit processing`);
         break paginator;
       }
 
@@ -114,7 +114,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
       let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
 
       if (!description) {
-        console.log("🔍 [CHANGELOG] Commit " + commit.sha.substring(0, 7) + " skipped: No description");
+        info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: No description`);
         continue;
       }
 
@@ -123,7 +123,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
       flag = trim(flag);
 
       if (flag === "ignore") {
-        console.log("🔍 [CHANGELOG] Commit " + commit.sha.substring(0, 7) + " skipped: Flagged as ignore");
+        info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: Flagged as ignore`);
         continue;
       }
 
@@ -134,7 +134,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
 
       // Logging for every 10th commit to avoid excessive logs
       if (processedCommitCount % 10 === 0 || processedCommitCount < 5) {
-        console.log("🔍 [CHANGELOG] Processing commit " + commit.sha.substring(0, 7) + ": " + type + (scope ? `(${scope})` : "") + ": " + description);
+        info(`🔍 [CHANGELOG] Processing commit ${commit.sha.substring(0, 7)}: ${type}${scope ? `(${scope})` : ""}: ${description}`);
       }
 
       let typeGroup = typeGroups.find(record => record.type === type);
@@ -234,14 +234,14 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
     changelog.push("");
   }
 
-  console.log("🔍 [CHANGELOG] Changelog generation complete");
-  console.log("🔍 [CHANGELOG] Commits analyzed: " + commitCount);
-  console.log("🔍 [CHANGELOG] Commits included in changelog: " + processedCommitCount);
+  info(`🔍 [CHANGELOG] Changelog generation complete`);
+  info(`🔍 [CHANGELOG] Commits analyzed: ${commitCount}`);
+  info(`🔍 [CHANGELOG] Commits included in changelog: ${processedCommitCount}`);
 
   if (lastSha) {
-    console.log("🔍 [CHANGELOG] Comparison: From SHA " + lastSha.substring(0, 7) + " to " + sha().substring(0, 7));
+    info(`🔍 [CHANGELOG] Comparison: From SHA ${lastSha.substring(0, 7)} to ${sha().substring(0, 7)}`);
   } else {
-    console.log("🔍 [CHANGELOG] No previous SHA found for comparison, included all accessible commits");
+    info(`🔍 [CHANGELOG] No previous SHA found for comparison, included all accessible commits`);
   }
 
   return changelog.join("\n");

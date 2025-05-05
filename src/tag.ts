@@ -23,7 +23,7 @@
  *
  */
 
-import { debug } from "@actions/core";
+import { debug, info } from "@actions/core";
 import { type SemVer } from "semver";
 import { octokit, parseSemVer, releaseName, repository, semver, sha } from "./utils/index.js";
 
@@ -56,15 +56,15 @@ export async function getTagInfo(): Promise<TagInfoI> {
 
     tagInfo.prerelease = semVer.prerelease.length > 0;
 
-    console.log("🔍 [CHANGELOG] Current release name: " + releaseName());
-    console.log("🔍 [CHANGELOG] Parsed as semver: " + JSON.stringify({
+    info(`🔍 [CHANGELOG] Current release name: ${releaseName()}`);
+    info(`🔍 [CHANGELOG] Parsed as semver: ${JSON.stringify({
       version: semVer.version,
       major: semVer.major,
       minor: semVer.minor,
       patch: semVer.patch,
       prerelease: semVer.prerelease,
       isPrerelease: tagInfo.prerelease
-    }));
+    })}`);
 
     if (tagInfo.prerelease) tagInfo.releaseId = `${ semVer.prerelease[0] }`;
   }
@@ -78,20 +78,20 @@ export async function getTagInfo(): Promise<TagInfoI> {
     },
   );
 
-  console.log("🔍 [CHANGELOG] Current commit SHA: " + sha());
-  console.log("🔍 [CHANGELOG] Starting tag comparison...");
+  info(`🔍 [CHANGELOG] Current commit SHA: ${sha()}`);
+  info(`🔍 [CHANGELOG] Starting tag comparison...`);
 
   loop: for await (const { data } of iterator) {
     for (const { name, commit } of data) {
-      console.log("🔍 [CHANGELOG] Analyzing tag: " + name + " (SHA: " + commit.sha + ")");
+      info(`🔍 [CHANGELOG] Analyzing tag: ${name} (SHA: ${commit.sha})`);
 
       if (sha() === commit.sha) {
-        console.log("🔍 [CHANGELOG] Skipping tag with same SHA as current");
+        info(`🔍 [CHANGELOG] Skipping tag with same SHA as current`);
         continue;
       }
 
       if (semVer == null) {
-        console.log("🔍 [CHANGELOG] No semver mode - selecting first available tag");
+        info(`🔍 [CHANGELOG] No semver mode - selecting first available tag`);
         tagInfo.previous = {
           name,
           sha: commit.sha,
@@ -103,12 +103,12 @@ export async function getTagInfo(): Promise<TagInfoI> {
       const version = parseSemVer(name);
 
       if (version == null) {
-        console.log("🔍 [CHANGELOG] Tag " + name + " is not a valid semver format, skipping");
+        info(`🔍 [CHANGELOG] Tag ${name} is not a valid semver format, skipping`);
         continue;
       }
 
       if (semVer.compare(version) <= 0) {
-        console.log("🔍 [CHANGELOG] Tag " + name + " is not older than current version, skipping");
+        info(`🔍 [CHANGELOG] Tag ${name} is not older than current version, skipping`);
         continue;
       }
 
@@ -116,10 +116,11 @@ export async function getTagInfo(): Promise<TagInfoI> {
       const currentHasPrerelease = semVer.prerelease.length > 0;
       const versionHasPrerelease = version.prerelease.length > 0;
 
-      console.log("🔍 [CHANGELOG] Comparing prereleases: Current="
-           + (currentHasPrerelease ? semVer.prerelease[0] : "none")
-           + ", Tag="
-           + (versionHasPrerelease ? version.prerelease[0] : "none"));
+      info(`🔍 [CHANGELOG] Comparing prereleases: Current=${
+        currentHasPrerelease ? semVer.prerelease[0] : "none"
+      }, Tag=${
+        versionHasPrerelease ? version.prerelease[0] : "none"
+      }`);
 
       // If current version has a prerelease suffix (e.g., v1.0.1-develop)
       if (currentHasPrerelease) {
@@ -129,25 +130,25 @@ export async function getTagInfo(): Promise<TagInfoI> {
         if (versionHasPrerelease) {
           // Check if prerelease suffix is different (e.g., "develop" vs "beta")
           if (semVer.prerelease[0] !== version.prerelease[0]) {
-            console.log("🔍 [CHANGELOG] Different prerelease identifier, skipping");
+            info(`🔍 [CHANGELOG] Different prerelease identifier, skipping`);
             continue; // Skip tags with different suffixes
           }
         } else {
           // If current version has prerelease but the analyzed tag doesn't,
           // we skip it (unless we want to include stable releases as base)
-          console.log("🔍 [CHANGELOG] Current version has prerelease but tag doesn't, skipping");
+          info(`🔍 [CHANGELOG] Current version has prerelease but tag doesn't, skipping`);
           continue;
         }
       } else {
         // If current version is stable (no prerelease),
         // we ignore tags with prerelease as before
         if (versionHasPrerelease) {
-          console.log("🔍 [CHANGELOG] Current version is stable but tag has prerelease, skipping");
+          info(`🔍 [CHANGELOG] Current version is stable but tag has prerelease, skipping`);
           continue;
         }
       }
 
-      console.log("🔍 [CHANGELOG] Selected as previous tag: " + name);
+      info(`🔍 [CHANGELOG] Selected as previous tag: ${name}`);
       tagInfo.previous = {
         name,
         sha: commit.sha,
@@ -158,9 +159,9 @@ export async function getTagInfo(): Promise<TagInfoI> {
   }
 
   if (tagInfo.previous) {
-    console.log("🔍 [CHANGELOG] Final selection - Previous tag: " + tagInfo.previous.name + " (SHA: " + tagInfo.previous.sha + ")");
+    info(`🔍 [CHANGELOG] Final selection - Previous tag: ${tagInfo.previous.name} (SHA: ${tagInfo.previous.sha})`);
   } else {
-    console.log("🔍 [CHANGELOG] No previous tag found for comparison");
+    info(`🔍 [CHANGELOG] No previous tag found for comparison`);
   }
 
   return tagInfo;
