@@ -84,7 +84,30 @@ export async function getTagInfo(): Promise<TagInfoI> {
 
       if (version == null || semVer.compare(version) <= 0) continue;
 
-      if (version.prerelease.length > 0 && !info.prerelease) continue;
+      // Check if prerelease suffixes are compatible
+      const currentHasPrerelease = semVer.prerelease.length > 0;
+      const versionHasPrerelease = version.prerelease.length > 0;
+
+      // If current version has a prerelease suffix (e.g., v1.0.1-develop)
+      if (currentHasPrerelease) {
+        // When looking for a tag with prerelease (e.g., v1.0.1-develop),
+        // we only want to compare with other tags having the same first prerelease identifier
+        // For example, v1.0.0-develop should only be compared with other v*-develop tags
+        if (versionHasPrerelease) {
+          // Check if prerelease suffix is different (e.g., "develop" vs "beta")
+          if (semVer.prerelease[0] !== version.prerelease[0]) {
+            continue; // Skip tags with different suffixes
+          }
+        } else {
+          // If current version has prerelease but the analyzed tag doesn't,
+          // we skip it (unless we want to include stable releases as base)
+          continue;
+        }
+      } else {
+        // If current version is stable (no prerelease),
+        // we ignore tags with prerelease as before
+        if (versionHasPrerelease) continue;
+      }
 
       info.previous = {
         name,
