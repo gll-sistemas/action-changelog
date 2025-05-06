@@ -26,23 +26,51 @@
 const REGEX = /^(?<type>[^!:()]*)(?:\((?<scope>[^!()]*?)\)|)(?<breaking>!?): *(?<description>.+?) *(?:\(#(?<pr>[1-9]\d*?)\)|) *(?:\[(?<flag>[^[\]]*?)]|)\s*$/;
 
 export function parseCommitMessage(message: string): ParsedCommitMessageI {
+  // Verificar se é um merge commit
+  if (message.startsWith('Merge ')) {
+    return {
+      breaking: false,
+      description: message,
+      type: '',
+      scope: '',
+      merge: true,
+      revert: false
+    };
+  }
+
+  // Verificar se é um revert commit
+  if (message.startsWith('Revert "')) {
+    return {
+      breaking: false,
+      description: message,
+      type: '',
+      scope: '',
+      merge: false,
+      revert: true
+    };
+  }
+
   const { description, flag, pr, scope, type, breaking } = REGEX.exec(message)?.groups ?? {};
 
   return {
     breaking: !!breaking,
-    description,
+    description: description || '',
     flag,
     pr,
-    scope,
-    type,
+    scope: scope || '',
+    type: type || '',
+    merge: false,
+    revert: false
   };
 }
 
 export interface ParsedCommitMessageI {
   breaking: boolean;
-  description?: string;
+  description: string;
   flag?: string;
   pr?: string;
-  scope?: string;
-  type?: string;
+  scope: string;
+  type: string;
+  merge: boolean;
+  revert: boolean;
 }

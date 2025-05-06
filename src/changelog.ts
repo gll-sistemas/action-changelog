@@ -114,110 +114,266 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
   try {
     const { rest } = octokit();
     const { owner, repo } = repository();
-    
-    info(`�� [CHANGELOG] Verificando identidade entre ${baseRef} e ${headRef}`);
-    
-    // Primeira abordagem: Verificar diretamente a comparação via API
+
+    info(`🔍 [CHANGELOG] Verificando identidade entre ${baseRef} e ${headRef}`);
+
+    // Normaliza as referências para manusear tags de desenvolvimento (v1.0.x-develop)
+    const normalizeRef = (ref: string): string => {
+      // Limpa a ref para remover prefixos refs/* se existirem
+      const cleanRef = ref.replace(/^refs\/(tags|heads)\//, '');
+      return cleanRef;
+    };
+
+    const baseRefNormalized = normalizeRef(baseRef);
+    const headRefNormalized = normalizeRef(headRef);
+
+    info(`🔍 [CHANGELOG] Referências normalizadas: ${baseRefNormalized} e ${headRefNormalized}`);
+
+    // Caso especial: Verificar se as referências representam versões sequenciais de desenvolvimento
+    // Ex: v1.0.17-develop e v1.0.18-develop que frequentemente são idênticas
+    const devTagPattern = /^v(\d+)\.(\d+)\.(\d+)-develop$/;
+    const baseMatches = baseRefNormalized.match(devTagPattern);
+    const headMatches = headRefNormalized.match(devTagPattern);
+
+    if (baseMatches && headMatches) {
+      info(`🔍 [CHANGELOG] Detectadas tags de desenvolvimento: ${baseRefNormalized} e ${headRefNormalized}`);
+
+      // Se ambos são tags de desenvolvimento, vamos fazer verificações adicionais
+      try {
+        // Primeira abordagem: Verificar diretamente a comparação via API
+        const compareResult = await rest.repos.compareCommits({
+          owner,
+          repo,
+          base: baseRefNormalized,
+          head: headRefNormalized,
+        });
+
+        // Verificações especiais para tags de desenvolvimento:
+
+        // 1. Se não há diferenças, a API diz que ahead_by = 0 e behind_by = 0
+        if (compareResult.data.ahead_by === 0 && compareResult.data.behind_by === 0) {
+          info(`🔍 [CHANGELOG] A API do GitHub confirma que as referências são idênticas (ahead_by = 0, behind_by = 0)`);
+          return true;
+        }
+
+        // 2. Se há apenas merges ou commits vazios, pode ter ahead_by > 0 mas files_count = 0
+        if (compareResult.data.files?.length === 0) {
+          info(`🔍 [CHANGELOG] A comparação não mostra alterações em arquivos (files_count = 0)`);
+          return true;
+        }
+
+        // 3. Status especial para o problema de tags sequenciais
+        if (compareResult.data.status === "identical") {
+          info(`🔍 [CHANGELOG] A API retorna status "identical"`);
+          return true;
+        }
+      } catch (error) {
+        info(`🔍 [CHANGELOG] Erro durante verificação especial de tags de desenvolvimento: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      // Verificação adicional para tags de desenvolvimento sequenciais (v1.0.x-develop)
+      // Extrair os números de versão
+      const [_, baseMajor, baseMinor, basePatch] = baseMatches.map(Number);
+      const [__, headMajor, headMinor, headPatch] = headMatches.map(Number);
+
+      // Se as versões são sequenciais (só o patch muda em +1)
+      if (baseMajor === headMajor && baseMinor === headMinor &&
+          Math.abs(headPatch - basePatch) === 1) {
+        info(`🔍 [CHANGELOG] Tags de desenvolvimento sequenciais detectadas: ${baseRefNormalized} e ${headRefNormalized}`);
+
+        try {
+          // Obter os SHA reais dos commits para as tags
+          const baseTagData = await rest.git.getRef({
+            owner,
+            repo,
+            ref: `tags/${baseRefNormalized}`
+          }).catch(() => rest.git.getRef({
+            owner,
+            repo,
+            ref: `heads/${baseRefNormalized}`
+          }));
+
+          const headTagData = await rest.git.getRef({
+            owner,
+            repo,
+            ref: `tags/${headRefNormalized}`
+          }).catch(() => rest.git.getRef({
+            owner,
+            repo,
+            ref: `heads/${headRefNormalized}`
+          }));
+
+          // Obter os objetos completos dos tags (que podem apontar para tags ou commits)
+          if (baseTagData && headTagData) {
+            const baseTagSha = baseTagData.data.object.sha;
+            const headTagSha = headTagData.data.object.sha;
+
+            // Para tags sequenciais, se apontam para o mesmo objeto, são idênticas
+            if (baseTagSha === headTagSha) {
+              info(`🔍 [CHANGELOG] Tags sequenciais apontam para o mesmo objeto: ${baseTagSha}`);
+              return true;
+            }
+
+            // Verificar se são tags anotadas ou lightweight
+            const baseTagType = baseTagData.data.object.type;
+            const headTagType = headTagData.data.object.type;
+
+            // Para tags anotadas, precisamos pegar o commit para o qual elas apontam
+            let baseCommitSha = baseTagSha;
+            let headCommitSha = headTagSha;
+
+            if (baseTagType === 'tag') {
+              const baseTagObject = await rest.git.getTag({
+                owner,
+                repo,
+                tag_sha: baseTagSha
+              });
+              baseCommitSha = baseTagObject.data.object.sha;
+            }
+
+            if (headTagType === 'tag') {
+              const headTagObject = await rest.git.getTag({
+                owner,
+                repo,
+                tag_sha: headTagSha
+              });
+              headCommitSha = headTagObject.data.object.sha;
+            }
+
+            // Se os commit SHAs são iguais, as tags são idênticas
+            if (baseCommitSha === headCommitSha) {
+              info(`🔍 [CHANGELOG] Tags sequenciais apontam para o mesmo commit: ${baseCommitSha}`);
+              return true;
+            }
+
+            // Obter os commits
+            const baseCommit = await rest.git.getCommit({
+              owner,
+              repo,
+              commit_sha: baseCommitSha
+            });
+
+            const headCommit = await rest.git.getCommit({
+              owner,
+              repo,
+              commit_sha: headCommitSha
+            });
+
+            // Compare tree SHAs - duas tags que têm o mesmo tree SHA têm o mesmo estado do código
+            if (baseCommit.data.tree.sha === headCommit.data.tree.sha) {
+              info(`🔍 [CHANGELOG] Tags sequenciais têm trees idênticos: ${baseCommit.data.tree.sha}`);
+              return true;
+            }
+          }
+        } catch (error) {
+          info(`🔍 [CHANGELOG] Erro ao comparar trees das tags: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+
+    // Verificação padrão para todas as referências
     try {
+      // Primeira abordagem: Verificar diretamente a comparação via API
       const compareResult = await rest.repos.compareCommits({
         owner,
         repo,
         base: baseRef,
         head: headRef,
       });
-      
+
       // Se não há diferenças, a API diz que ahead_by = 0 e behind_by = 0
       if (compareResult.data.ahead_by === 0 && compareResult.data.behind_by === 0) {
         info(`🔍 [CHANGELOG] A API do GitHub confirma que as referências são idênticas (ahead_by = 0, behind_by = 0)`);
         return true;
       }
-      
+
       // Se há apenas merges ou commits vazios, pode ter ahead_by > 0 mas files_count = 0
       if (compareResult.data.files?.length === 0) {
         info(`🔍 [CHANGELOG] A comparação não mostra alterações em arquivos (files_count = 0)`);
         return true;
       }
-      
-      info(`🔍 [CHANGELOG] Resultado da comparação: ahead_by=${compareResult.data.ahead_by}, behind_by=${compareResult.data.behind_by}, files alterados=${compareResult.data.files?.length ?? 'N/A'}, total_commits=${compareResult.data.total_commits}`);
-      
+
+      // Se o status é identical, são idênticas (mesmo que ahead_by seja > 0)
+      if (compareResult.data.status === "identical") {
+        info(`🔍 [CHANGELOG] A API retorna status "identical"`);
+        return true;
+      }
     } catch (error) {
       info(`🔍 [CHANGELOG] Erro ao comparar referências via API: ${error instanceof Error ? error.message : String(error)}`);
     }
-    
-    // Segunda abordagem: Comparar tree SHAs dos commits
+
+    // Segunda abordagem: Comparar tree SHAs diretamente
     try {
-      // Resolver referências para tags como refs/tags/nome-da-tag
-      const getRefOrCommit = async (ref: string) => {
+      // Resolver referências para obter os SHAs reais
+      const resolveRef = async (ref: string) => {
         try {
-          // Tentar primeiro como uma ref normal (branch ou tag)
-          const refPath = ref.startsWith('refs/') ? ref : `refs/tags/${ref}`;
-          return await rest.git.getRef({
+          // Tentar como tag
+          const tagRef = await rest.git.getRef({
             owner,
             repo,
-            ref: refPath.replace(/^refs\//, '') // Remover 'refs/' se existir
-          });
-        } catch (error) {
-          try {
-            // Tentar como um branch
-            if (!ref.includes('/')) {
-              return await rest.git.getRef({
-                owner,
-                repo,
-                ref: `heads/${ref}`
-              });
-            }
-          } catch (branchError) {
-            // Continua para a próxima abordagem
-          }
-          
-          // Se ambas falharem, tentar como SHA direto
-          return await rest.git.getCommit({
+            ref: `tags/${ref.replace(/^refs\/tags\//, '')}`
+          }).catch(() => null);
+
+          if (tagRef) return tagRef;
+
+          // Tentar como branch
+          const branchRef = await rest.git.getRef({
+            owner,
+            repo,
+            ref: `heads/${ref.replace(/^refs\/heads\//, '')}`
+          }).catch(() => null);
+
+          if (branchRef) return branchRef;
+
+          // Tentar como SHA direto
+          return rest.git.getCommit({
             owner,
             repo,
             commit_sha: ref
           });
+        } catch (e) {
+          return null;
         }
       };
-      
-      // Obter refs para base e head
-      const baseCommitRef = await getRefOrCommit(baseRef);
-      const headCommitRef = await getRefOrCommit(headRef);
-      
-      // Extrair o SHA real do commit
-      const baseCommitSha = 'object' in baseCommitRef.data ? baseCommitRef.data.object.sha : baseRef;
-      const headCommitSha = 'object' in headCommitRef.data ? headCommitRef.data.object.sha : headRef;
-      
-      info(`🔍 [CHANGELOG] SHA resolvidos: base=${baseCommitSha.substring(0, 7)}, head=${headCommitSha.substring(0, 7)}`);
-      
-      // Obter os dados dos commits
-      const baseCommit = await rest.git.getCommit({
-        owner,
-        repo,
-        commit_sha: baseCommitSha
-      });
-      
-      const headCommit = await rest.git.getCommit({
-        owner,
-        repo,
-        commit_sha: headCommitSha
-      });
-      
-      // Comparar os tree SHAs
-      const baseTreeSha = baseCommit.data.tree.sha;
-      const headTreeSha = headCommit.data.tree.sha;
-      
-      const treesIdentical = baseTreeSha === headTreeSha;
-      
-      if (treesIdentical) {
-        info(`🔍 [CHANGELOG] Os tree SHAs são idênticos: ${baseTreeSha} = ${headTreeSha}`);
-        return true;
-      } else {
-        info(`🔍 [CHANGELOG] Os tree SHAs são diferentes: ${baseTreeSha} ≠ ${headTreeSha}`);
+
+      const baseRefData = await resolveRef(baseRef);
+      const headRefData = await resolveRef(headRef);
+
+      if (baseRefData && headRefData) {
+        // Se ambos são refs, comparar os SHA para que apontam
+        if ('object' in baseRefData.data && 'object' in headRefData.data) {
+          const baseSha = baseRefData.data.object.sha;
+          const headSha = headRefData.data.object.sha;
+
+          if (baseSha === headSha) {
+            info(`🔍 [CHANGELOG] Refs apontam para o mesmo SHA: ${baseSha}`);
+            return true;
+          }
+
+          // Se são objetos diferentes, verificar seus trees
+          const baseCommit = await rest.git.getCommit({
+            owner,
+            repo,
+            commit_sha: baseSha
+          }).catch(() => null);
+
+          const headCommit = await rest.git.getCommit({
+            owner,
+            repo,
+            commit_sha: headSha
+          }).catch(() => null);
+
+          if (baseCommit && headCommit &&
+              baseCommit.data.tree.sha === headCommit.data.tree.sha) {
+            info(`🔍 [CHANGELOG] Commits têm o mesmo tree SHA: ${baseCommit.data.tree.sha}`);
+            return true;
+          }
+        }
       }
     } catch (error) {
       info(`🔍 [CHANGELOG] Erro ao comparar trees: ${error instanceof Error ? error.message : String(error)}`);
     }
-    
+
     info(`🔍 [CHANGELOG] As referências são diferentes após múltiplas verificações`);
     return false;
   } catch (error) {
@@ -231,278 +387,152 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
   const { owner, repo, url } = repository();
   const defaultType = defaultCommitType();
   const typeMap = commitTypes();
-  const shouldIncludePRLinks = includePRLinks();
   const shouldIncludeCommitLinks = includeCommitLinks();
+  const shouldIncludePRLinks = includePRLinks();
   const shouldMentionAuthors = mentionAuthors();
   const shouldUseGithubAutolink = useGithubAutolink();
 
-  info(`🔍 [CHANGELOG] Gerando changelog`);
-  info(`�� [CHANGELOG] SHA atual: ${sha()}`);
-  info(`🔍 [CHANGELOG] SHA anterior (lastSha): ${lastSha || "none"}`);
+  // Fixed: Using paginate correctly with the new API structure
+  const tags = await paginate(rest.repos.listTags, {
+    owner,
+    repo,
+    per_page: 100,
+  });
 
-  const typeGroups: TypeGroupI[] = [];
-  let commitCount = 0;
-  let processedCommitCount = 0;
-  
-  // Retorna changelog vazio se os SHAs são idênticos
-  if (lastSha === sha()) {
-    info(`🔍 [CHANGELOG] SHAs atual e anterior são idênticos, não há alterações para incluir`);
-    return "## No changes in this release\n\n**No changes detected between these releases.**";
-  }
+  let targetSha = lastSha;
+  let initialAttemptWithLastSha = !!lastSha;
+  let retryCount = 0;
+  const MAX_RETRIES = 5; // Limite para evitar loops infinitos
 
-  // Se temos um SHA anterior, primeiro verificamos se as releases são efetivamente idênticas
-  if (lastSha) {
-    info(`🔍 [CHANGELOG] Comparando referências: ${lastSha} e ${sha()}`);
-    
-    // Verificar se os dois commits representam o mesmo estado de código
-    const areIdentical = await areTagsEffectivelyIdentical(lastSha, sha());
-    if (areIdentical) {
-      info(`🔍 [CHANGELOG] Releases são efetivamente idênticas em conteúdo, não há alterações para incluir`);
-      return "## No changes in this release\n\n**No changes detected between these releases.**";
-    }
+  // Continue a iterar quando as tags são efetivamente idênticas
+  while (retryCount < MAX_RETRIES) {
+    info(`🔍 [CHANGELOG] Tentativa ${retryCount + 1} de gerar changelog${targetSha ? ` a partir de ${targetSha.substring(0, 7)}` : ''}`);
 
-    info(`🔍 [CHANGELOG] Usando API de comparação para obter commits entre ${lastSha.substring(0, 7)} e ${sha().substring(0, 7)}`);
+    let commits: any[] = [];
 
-    try {
-      // Verificar se há alterações entre os dois SHAs
-      const compareResult = await rest.repos.compareCommits({
-        owner,
-        repo,
-        base: lastSha,
-        head: sha(),
-      });
-      
-      info(`🔍 [CHANGELOG] Status da API de comparação: ${compareResult.status}, total de commits: ${compareResult.data.total_commits}, ahead by: ${compareResult.data.ahead_by}, behind by: ${compareResult.data.behind_by}`);
-      
-      // Se a API diz que estamos à frente, mas não há commits ou arquivos modificados, não há mudanças significativas
-      if ((compareResult.data.ahead_by > 0 && compareResult.data.total_commits === 0) || 
-          (compareResult.data.files && compareResult.data.files.length === 0)) {
-        info(`🔍 [CHANGELOG] Resposta inconsistente da API ou sem alterações em arquivos`);
-        return "## No changes in this release\n\n**No significant changes detected between these releases.**";
-      }
-      
-      // Se não há commits à frente, não há alterações para incluir no changelog
-      if (compareResult.data.ahead_by === 0) {
-        info(`🔍 [CHANGELOG] Não há commits à frente do SHA base, não há alterações para incluir no changelog`);
-        return "## No changes in this release\n\n**No changes detected between these releases.**";
-      }
-      
-      if (compareResult.data.commits.length === 0) {
-        info(`🔍 [CHANGELOG] API de comparação não retornou commits entre os SHAs, mesmo com ahead_by > 0`);
-        warning(`API de comparação reportou ${compareResult.data.ahead_by} commits à frente mas retornou 0 commits. Verifique a resposta da API do GitHub.`);
-        return "## No significant changes detected\n\n**Full Changelog**: " + 
-               `${url}/compare/${encodeURIComponent(lastSha)}...${encodeURIComponent(sha())}`;
-      }
+    if (targetSha) {
+      const currentSha = sha();
 
-      info(`🔍 [CHANGELOG] Encontrados ${compareResult.data.commits.length} commits entre os dois SHAs`);
+      // Verifica se as tags são efetivamente idênticas
+      if (await areTagsEffectivelyIdentical(targetSha, currentSha)) {
+        info(`🔍 [CHANGELOG] As tags são efetivamente idênticas: ${targetSha.substring(0, 7)} e ${currentSha.substring(0, 7)}`);
 
-      // Rastrear commits que devem ser excluídos do changelog
-      let mergeCommits = 0;
-      let emptyDescriptionCommits = 0;
-      let ignoredCommits = 0;
+        // Encontra a próxima tag no histórico para continuar a iteração
+        const currentTagIndex = tags.findIndex(tag => tag.commit.sha === currentSha);
+        const previousTagIndex = tags.findIndex(tag => tag.commit.sha === targetSha);
 
-      // Processar cada commit da comparação
-      for (const commit of compareResult.data.commits) {
-        commitCount++;
+        // Se ambas as tags estão no histórico e são próximas, continue para a próxima
+        if (currentTagIndex >= 0 && previousTagIndex >= 0) {
+          const nextTagIndex = Math.max(previousTagIndex, currentTagIndex) + 1;
 
-        const message = commit.commit.message.split("\n")[0];
-        const commitSHA = commit.sha.substring(0, 7);
-        debug(`commit message -> ${message}`);
-        
-        // Pular commits de merge
-        if (message.startsWith("Merge ") || message.includes(" into ") || message.includes("//github.com")) {
-          info(`🔍 [CHANGELOG] Commit ${commitSHA} ignorado: Commit de merge`);
-          mergeCommits++;
-          continue;
-        }
-
-        let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
-
-        if (!description) {
-          info(`🔍 [CHANGELOG] Commit ${commitSHA} ignorado: Sem descrição`);
-          emptyDescriptionCommits++;
-          continue;
-        }
-
-        description = trim(description);
-        flag = trim(flag);
-
-        if (flag === "ignore") {
-          info(`🔍 [CHANGELOG] Commit ${commitSHA} ignorado: Marcado como ignore`);
-          ignoredCommits++;
-          continue;
-        }
-
-        processedCommitCount++;
-
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        type = typeMap[trim(type ?? "")] ?? defaultType;
-
-        // Log para cada 10º commit para evitar logs excessivos
-        if (processedCommitCount % 10 === 0 || processedCommitCount < 5) {
-          info(`🔍 [CHANGELOG] Processando commit ${commitSHA}: ${type}${scope ? `(${scope})` : ""}: ${description}`);
-        }
-
-        let typeGroup = typeGroups.find(record => record.type === type);
-
-        if (typeGroup == null) {
-          typeGroup = {
-            type,
-            scopes: [],
-          };
-
-          typeGroups.push(typeGroup);
-        }
-
-        scope = trim(scope ?? "");
-
-        let scopeGroup = typeGroup.scopes.find(record => record.scope === scope);
-
-        if (scopeGroup == null) {
-          scopeGroup = {
-            scope,
-            logs: [],
-          };
-
-          typeGroup.scopes.push(scopeGroup);
-        }
-
-        let log = scopeGroup.logs.find(record => record.description === description);
-
-        if (log == null) {
-          log = {
-            breaking,
-            description,
-            references: [],
-          };
-
-          scopeGroup.logs.push(log);
-        }
-
-        const reference: string[] = [];
-
-        if (pr && shouldIncludePRLinks) reference.push(shouldUseGithubAutolink ? `#${pr}` : `[#${pr}](${url}/issues/${pr})`);
-        else if (shouldIncludeCommitLinks) reference.push(shouldUseGithubAutolink ? commit.sha : `[${commit.sha.substring(0, 7)}](${url}/commit/${commit.sha})`);
-
-        const username = commit.author?.login;
-
-        if (username && shouldMentionAuthors) {
-          const mention = `by @${username}`;
-
-          reference.push(mention);
-
-          const lastReference = log.references[log.references.length - 1];
-
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-          if (lastReference?.endsWith(mention)) {
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-            log.references.push(log.references.pop()!.replace(mention, `& ${reference.join(" ")}`));
-
+          if (nextTagIndex < tags.length) {
+            targetSha = tags[nextTagIndex].commit.sha;
+            info(`🔍 [CHANGELOG] Continuando para a próxima tag: ${tags[nextTagIndex].name} (${targetSha.substring(0, 7)})`);
+            retryCount++;
             continue;
           }
         }
 
-        if (reference.length > 0) log.references.push(reference.join(" "));
+        // Se não encontrarmos uma próxima tag, tentamos usar o commit pai
+        try {
+          const commit = await rest.git.getCommit({
+            owner,
+            repo,
+            commit_sha: targetSha,
+          });
+
+          if (commit.data.parents.length > 0) {
+            targetSha = commit.data.parents[0].sha;
+            info(`🔍 [CHANGELOG] Continuando para o commit pai: ${targetSha.substring(0, 7)}`);
+            retryCount++;
+            continue;
+          }
+        } catch (error) {
+          info(`🔍 [CHANGELOG] Erro ao obter commit pai: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
 
-      // Log de estatísticas sobre commits ignorados
-      info(`🔍 [CHANGELOG] Commits de merge ignorados: ${mergeCommits}`);
-      info(`🔍 [CHANGELOG] Commits com descrições vazias ignorados: ${emptyDescriptionCommits}`);
-      info(`🔍 [CHANGELOG] Commits marcados como ignorados: ${ignoredCommits}`);
-      
-      // Se nenhum commit foi processado, retornar mensagem indicando sem alterações significativas
-      if (processedCommitCount === 0) {
-        info(`🔍 [CHANGELOG] Nenhuma alteração significativa encontrada para o changelog (todos os commits foram filtrados)`);
-        return "## No significant changes in this release\n\n**Full Changelog**: " + 
-               `${url}/compare/${encodeURIComponent(lastSha)}...${encodeURIComponent(sha())}`;
-      }
+      info(`🔍 [CHANGELOG] Obtendo commits entre ${targetSha.substring(0, 7)} e ${currentSha.substring(0, 7)}`);
 
-      info(`🔍 [CHANGELOG] API de comparação usada com sucesso para gerar o changelog`);
-      info(`🔍 [CHANGELOG] Geração do changelog concluída`);
-      info(`🔍 [CHANGELOG] Commits analisados: ${commitCount}`);
-      info(`🔍 [CHANGELOG] Commits incluídos no changelog: ${processedCommitCount}`);
-      info(`🔍 [CHANGELOG] Comparação: De SHA ${lastSha.substring(0, 7)} para ${sha().substring(0, 7)}`);
-      
-      return formatChangelog(typeGroups, typeMap, defaultType);
-    } catch (error) {
-      info(`🔍 [CHANGELOG] Erro ao usar API de comparação: ${error instanceof Error ? error.message : String(error)}`);
-      info(`🔍 [CHANGELOG] Recorrendo ao método de listagem de commits legado`);
+      try {
+        // Corrigido: Ajuste para trabalhar com a nova tipagem da resposta
+        const compareResult = await rest.repos.compareCommits({
+          owner,
+          repo,
+          base: targetSha,
+          head: currentSha,
+          per_page: 100,
+        });
+
+        // Acessa commits diretamente do objeto de resposta
+        commits = compareResult.data.commits;
+      } catch (error) {
+        // Se falhar com o lastSha, tente com todos os commits
+        warning(`Failed to compare commits: ${error instanceof Error ? error.message : String(error)}`);
+
+        if (initialAttemptWithLastSha) {
+          info("Falling back to all commits...");
+          targetSha = undefined;
+          initialAttemptWithLastSha = false;
+          continue;
+        }
+
+        throw error;
+      }
+    } else {
+      info("🔍 [CHANGELOG] Obtendo todos os commits (nenhum SHA de referência fornecido)");
+
+      const response = await paginate(rest.repos.listCommits, {
+        owner,
+        repo,
+        per_page: 100,
+      });
+
+      commits = response;
     }
-  }
 
-  // Método legado ou fallback se compareCommits falhar ou lastSha não for fornecido
-  info(`🔍 [CHANGELOG] Usando método legado para buscar commits`);
-  
-  const iterator = paginate.iterator(
-    rest.repos.listCommits,
-    {
-      per_page: 100,
-      sha     : sha(),
-      owner,
-      repo,
-    },
-  );
+    const typeGroups: TypeGroupI[] = [];
+    let commitCount = 0;
+    let processedCommitCount = 0;
 
-  info(`🔍 [CHANGELOG] Buscando commits entre SHA atual e lastSha`);
-
-  paginator: for await (const { data } of iterator) {
-    for (const commit of data) {
+    for (const commit of commits) {
       commitCount++;
+      const { message } = commit.commit;
+      let parsed;
 
-      if (lastSha && commit.sha === lastSha) {
-        info(`🔍 [CHANGELOG] Encontrado commit lastSha (${lastSha.substring(0, 7)}), interrompendo processamento`);
-        break paginator;
-      }
+      try {
+        parsed = parseCommitMessage(message);
+      } catch (error) {
+        debug(`Failed to parse commit message: ${error instanceof Error ? error.message : String(error)}`);
+        debug(`Skipping commit "${message}"`);
 
-      const message = commit.commit.message.split("\n")[0];
-      debug(`commit message -> ${message}`);
-      
-      // Pular commits de merge
-      if (message.startsWith("Merge ") || message.includes(" into ") || message.includes("//github.com")) {
-        info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} ignorado: Commit de merge`);
         continue;
       }
 
-      let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
+      // Skip merge commits and revert commits
+      if (parsed == null || parsed.merge || parsed.revert) continue;
 
-      if (!description) {
-        info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} ignorado: Sem descrição`);
-        continue;
-      }
+      const { type } = parsed;
 
-      description = trim(description);
-
-      flag = trim(flag);
-
-      if (flag === "ignore") {
-        info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} ignorado: Marcado como ignore`);
-        continue;
-      }
+      // Skip if type is not valid in typeMap
+      if (type.length === 0 || !(type in typeMap)) continue;
 
       processedCommitCount++;
 
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      type = typeMap[trim(type ?? "")] ?? defaultType;
+      const { scope, description, breaking, pr } = parsed;
 
-      // Log para cada 10º commit para evitar logs excessivos
-      if (processedCommitCount % 10 === 0 || processedCommitCount < 5) {
-        info(`🔍 [CHANGELOG] Processando commit ${commit.sha.substring(0, 7)}: ${type}${scope ? `(${scope})` : ""}: ${description}`);
-      }
-
-      let typeGroup = typeGroups.find(record => record.type === type);
+      let typeGroup = typeGroups.find(log => log.type === typeMap[type]);
 
       if (typeGroup == null) {
         typeGroup = {
-          type,
+          type: typeMap[type],
           scopes: [],
         };
 
         typeGroups.push(typeGroup);
       }
 
-      scope = trim(scope ?? "");
-
-      let scopeGroup = typeGroup.scopes.find(record => record.scope === scope);
+      let scopeGroup = typeGroup.scopes.find(log => log.scope === scope);
 
       if (scopeGroup == null) {
         scopeGroup = {
@@ -550,24 +580,42 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
 
       if (reference.length > 0) log.references.push(reference.join(" "));
     }
+
+    // Se nenhum commit foi processado, tente novamente com a próxima tag se estivermos em retry mode
+    if (processedCommitCount === 0 && retryCount > 0 && retryCount < MAX_RETRIES) {
+      // Tenta encontrar uma tag anterior para tentar novamente
+      const currentTagIndex = tags.findIndex(tag => tag.commit.sha === targetSha);
+
+      if (currentTagIndex >= 0 && currentTagIndex + 1 < tags.length) {
+        targetSha = tags[currentTagIndex + 1].commit.sha;
+        info(`🔍 [CHANGELOG] Sem commits processados, tentando com a próxima tag: ${tags[currentTagIndex + 1].name} (${targetSha.substring(0, 7)})`);
+        retryCount++;
+        continue;
+      }
+    }
+
+    // Se nenhum commit foi processado, retornar mensagem indicando sem alterações significativas
+    if (processedCommitCount === 0 && lastSha) {
+      info(`🔍 [CHANGELOG] Nenhuma alteração significativa encontrada para o changelog (todos os commits foram filtrados)`);
+      return "## No significant changes in this release\n\n**Full Changelog**: " +
+            `${url}/compare/${encodeURIComponent(lastSha)}...${encodeURIComponent(sha())}`;
+    }
+
+    info(`🔍 [CHANGELOG] Geração do changelog concluída com método legado`);
+    info(`🔍 [CHANGELOG] Commits analisados: ${commitCount}`);
+    info(`🔍 [CHANGELOG] Commits incluídos no changelog: ${processedCommitCount}`);
+
+    if (lastSha) {
+      info(`🔍 [CHANGELOG] Comparação: De SHA ${lastSha.substring(0, 7)} para ${sha().substring(0, 7)}`);
+    } else {
+      info(`🔍 [CHANGELOG] Nenhum SHA anterior encontrado para comparação, incluídos todos os commits acessíveis`);
+    }
+
+    return formatChangelog(typeGroups, typeMap, defaultType);
   }
 
-  // Se nenhum commit foi processado, retornar mensagem indicando sem alterações significativas
-  if (processedCommitCount === 0 && lastSha) {
-    info(`🔍 [CHANGELOG] Nenhuma alteração significativa encontrada para o changelog (todos os commits foram filtrados)`);
-    return "## No significant changes in this release\n\n**Full Changelog**: " + 
-           `${url}/compare/${encodeURIComponent(lastSha)}...${encodeURIComponent(sha())}`;
-  }
-
-  info(`🔍 [CHANGELOG] Geração do changelog concluída com método legado`);
-  info(`🔍 [CHANGELOG] Commits analisados: ${commitCount}`);
-  info(`🔍 [CHANGELOG] Commits incluídos no changelog: ${processedCommitCount}`);
-
-  if (lastSha) {
-    info(`🔍 [CHANGELOG] Comparação: De SHA ${lastSha.substring(0, 7)} para ${sha().substring(0, 7)}`);
-  } else {
-    info(`🔍 [CHANGELOG] Nenhum SHA anterior encontrado para comparação, incluídos todos os commits acessíveis`);
-  }
-
-  return formatChangelog(typeGroups, typeMap, defaultType);
+  // Se chegamos aqui, atingimos o limite de tentativas
+  info(`🔍 [CHANGELOG] Atingido limite de ${MAX_RETRIES} tentativas de gerar um changelog válido`);
+  return "## Unable to generate changelog after multiple attempts\n\n" +
+         "No significant changes could be found between the compared versions after multiple attempts.";
 }
