@@ -23,18 +23,22 @@
  *
  */
 
+import { info } from "@actions/core";
 import { marked } from "marked";
 import {
   includeCompareLink,
   mentionNewContributors,
   octokit,
+  parseSemVer,
   releaseName,
   releaseNamePrefix,
   repository,
+  semver,
+  sha,
   useGithubAutolink,
 } from "./utils/index.js";
 
-export async function generateFooter(previousTagName?: string): Promise<string> {
+export async function generateFooter(previousTagName?: string, previousSha?: string): Promise<string> {
   const { owner, repo, url } = repository();
   const tagName = releaseName();
 
@@ -61,12 +65,34 @@ export async function generateFooter(previousTagName?: string): Promise<string> 
     if (markdownToken.type === "list") footer.push(`## New Contributors\n${ markdownToken.raw }\n`);
   }
 
-  if (includeCompareLink() && previousTagName) {
-    let link = `${ url }/compare/${ previousTagName }...${ tagName }`;
+  if (includeCompareLink() && (previousTagName || previousSha)) {
+    // Check if we're dealing with a prerelease
+    const isPrerelease = semver() ? (parseSemVer()?.prerelease.length ?? 0) > 0 : false;
+    let link: string;
 
-    if (!useGithubAutolink() || releaseNamePrefix()) link = `\`[${ previousTagName }...${ tagName }](${ url }/compare/${ previousTagName }...${ tagName })\``;
+    if (isPrerelease && previousSha) {
+      // For prereleases, always use SHA-based comparison
+      info(`📊 [CHANGELOG] Using SHA-based comparison for prerelease`);
+      link = `${url}/compare/${encodeURIComponent(previousSha)}...${encodeURIComponent(sha())}`;
 
-    footer.push(`**Full Changelog**: ${ link }`);
+      if (!useGithubAutolink() || releaseNamePrefix()) {
+        link = `[${previousSha.substring(0, 7)}...${sha().substring(0, 7)}](${link})`;
+      }
+    } else if (previousTagName) {
+      // For regular releases, use tag-based comparison
+      info(`📊 [CHANGELOG] Using tag-based comparison for regular release`);
+      link = `${url}/compare/${encodeURIComponent(previousTagName)}...${encodeURIComponent(tagName)}`;
+
+      if (!useGithubAutolink() || releaseNamePrefix()) {
+        link = `[${previousTagName}...${tagName}](${link})`;
+      }
+    } else {
+      // Fallback in case we don't have a previous reference
+      info(`📊 [CHANGELOG] No previous reference available for comparison link`);
+      return footer.join("\n\n");
+    }
+
+    footer.push(`**Full Changelog**: ${link}`);
   }
 
   if (footer.length > 0) footer.unshift("");

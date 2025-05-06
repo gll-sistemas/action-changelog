@@ -38,7 +38,7 @@ async function run(): Promise<void> {
 
   let changelog = await generateChangelog(previous?.sha);
 
-  changelog += await generateFooter(previous?.name);
+  changelog += await generateFooter(previous?.name, previous?.sha);
 
   setChangelog(changelog);
 }

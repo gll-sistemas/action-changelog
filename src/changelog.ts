@@ -107,19 +107,19 @@ function formatChangelog(typeGroups: TypeGroupI[], typeMap: Record<string, strin
 }
 
 /**
- * Verifica se duas referências (tags ou SHAs) apontam para o mesmo estado de código
- * usando múltiplas abordagens para garantir precisão
+ * Checks if two references (tags or SHAs) point to the same code state
+ * using multiple approaches to ensure accuracy
  */
 async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Promise<boolean> {
   try {
     const { rest } = octokit();
     const { owner, repo } = repository();
 
-    info(`🔍 [CHANGELOG] Verificando identidade entre ${baseRef} e ${headRef}`);
+    info(`🔍 [CHANGELOG] Checking identity between ${baseRef} and ${headRef}`);
 
-    // Normaliza as referências para manusear tags de desenvolvimento (v1.0.x-develop)
+    // Normalize references to handle development tags (v1.0.x-develop)
     const normalizeRef = (ref: string): string => {
-      // Limpa a ref para remover prefixos refs/* se existirem
+      // Clean the ref to remove refs/* prefixes if they exist
       const cleanRef = ref.replace(/^refs\/(tags|heads)\//, '');
       return cleanRef;
     };
@@ -127,20 +127,20 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
     const baseRefNormalized = normalizeRef(baseRef);
     const headRefNormalized = normalizeRef(headRef);
 
-    info(`🔍 [CHANGELOG] Referências normalizadas: ${baseRefNormalized} e ${headRefNormalized}`);
+    info(`🔍 [CHANGELOG] Normalized references: ${baseRefNormalized} and ${headRefNormalized}`);
 
-    // Caso especial: Verificar se as referências representam versões sequenciais de desenvolvimento
-    // Ex: v1.0.17-develop e v1.0.18-develop que frequentemente são idênticas
+    // Special case: Check if references represent sequential development versions
+    // Ex: v1.0.17-develop and v1.0.18-develop which are often identical
     const devTagPattern = /^v(\d+)\.(\d+)\.(\d+)-develop$/;
     const baseMatches = baseRefNormalized.match(devTagPattern);
     const headMatches = headRefNormalized.match(devTagPattern);
 
     if (baseMatches && headMatches) {
-      info(`🔍 [CHANGELOG] Detectadas tags de desenvolvimento: ${baseRefNormalized} e ${headRefNormalized}`);
+      info(`🔍 [CHANGELOG] Development tags detected: ${baseRefNormalized} and ${headRefNormalized}`);
 
-      // Se ambos são tags de desenvolvimento, vamos fazer verificações adicionais
+      // If both are development tags, we'll do additional checks
       try {
-        // Primeira abordagem: Verificar diretamente a comparação via API
+        // First approach: Directly check comparison via API
         const compareResult = await rest.repos.compareCommits({
           owner,
           repo,
@@ -148,41 +148,41 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
           head: headRefNormalized,
         });
 
-        // Verificações especiais para tags de desenvolvimento:
+        // Special checks for development tags:
 
-        // 1. Se não há diferenças, a API diz que ahead_by = 0 e behind_by = 0
+        // 1. If there are no differences, the API says ahead_by = 0 and behind_by = 0
         if (compareResult.data.ahead_by === 0 && compareResult.data.behind_by === 0) {
-          info(`🔍 [CHANGELOG] A API do GitHub confirma que as referências são idênticas (ahead_by = 0, behind_by = 0)`);
+          info(`🔍 [CHANGELOG] GitHub API confirms references are identical (ahead_by = 0, behind_by = 0)`);
           return true;
         }
 
-        // 2. Se há apenas merges ou commits vazios, pode ter ahead_by > 0 mas files_count = 0
+        // 2. If there are only merges or empty commits, might have ahead_by > 0 but files_count = 0
         if (compareResult.data.files?.length === 0) {
-          info(`🔍 [CHANGELOG] A comparação não mostra alterações em arquivos (files_count = 0)`);
+          info(`🔍 [CHANGELOG] Comparison shows no file changes (files_count = 0)`);
           return true;
         }
 
-        // 3. Status especial para o problema de tags sequenciais
+        // 3. Special status for the sequential tags issue
         if (compareResult.data.status === "identical") {
-          info(`🔍 [CHANGELOG] A API retorna status "identical"`);
+          info(`🔍 [CHANGELOG] API returns "identical" status`);
           return true;
         }
       } catch (error) {
-        info(`🔍 [CHANGELOG] Erro durante verificação especial de tags de desenvolvimento: ${error instanceof Error ? error.message : String(error)}`);
+        info(`🔍 [CHANGELOG] Error during special check for development tags: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      // Verificação adicional para tags de desenvolvimento sequenciais (v1.0.x-develop)
-      // Extrair os números de versão
+      // Additional check for sequential development tags (v1.0.x-develop)
+      // Extract version numbers
       const [_, baseMajor, baseMinor, basePatch] = baseMatches.map(Number);
       const [__, headMajor, headMinor, headPatch] = headMatches.map(Number);
 
-      // Se as versões são sequenciais (só o patch muda em +1)
+      // If versions are sequential (only patch changes by +1)
       if (baseMajor === headMajor && baseMinor === headMinor &&
           Math.abs(headPatch - basePatch) === 1) {
-        info(`🔍 [CHANGELOG] Tags de desenvolvimento sequenciais detectadas: ${baseRefNormalized} e ${headRefNormalized}`);
+        info(`🔍 [CHANGELOG] Sequential development tags detected: ${baseRefNormalized} and ${headRefNormalized}`);
 
         try {
-          // Obter os SHA reais dos commits para as tags
+          // Get the real commit SHAs for the tags
           const baseTagData = await rest.git.getRef({
             owner,
             repo,
@@ -203,22 +203,22 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
             ref: `heads/${headRefNormalized}`
           }));
 
-          // Obter os objetos completos dos tags (que podem apontar para tags ou commits)
+          // Get the complete tag objects (which may point to tags or commits)
           if (baseTagData && headTagData) {
             const baseTagSha = baseTagData.data.object.sha;
             const headTagSha = headTagData.data.object.sha;
 
-            // Para tags sequenciais, se apontam para o mesmo objeto, são idênticas
+            // For sequential tags, if they point to the same object, they are identical
             if (baseTagSha === headTagSha) {
-              info(`🔍 [CHANGELOG] Tags sequenciais apontam para o mesmo objeto: ${baseTagSha}`);
+              info(`🔍 [CHANGELOG] Sequential tags point to the same object: ${baseTagSha}`);
               return true;
             }
 
-            // Verificar se são tags anotadas ou lightweight
+            // Check if they are annotated or lightweight tags
             const baseTagType = baseTagData.data.object.type;
             const headTagType = headTagData.data.object.type;
 
-            // Para tags anotadas, precisamos pegar o commit para o qual elas apontam
+            // For annotated tags, we need to get the commit they point to
             let baseCommitSha = baseTagSha;
             let headCommitSha = headTagSha;
 
@@ -240,13 +240,13 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
               headCommitSha = headTagObject.data.object.sha;
             }
 
-            // Se os commit SHAs são iguais, as tags são idênticas
+            // If commit SHAs are equal, tags are identical
             if (baseCommitSha === headCommitSha) {
-              info(`🔍 [CHANGELOG] Tags sequenciais apontam para o mesmo commit: ${baseCommitSha}`);
+              info(`🔍 [CHANGELOG] Sequential tags point to the same commit: ${baseCommitSha}`);
               return true;
             }
 
-            // Obter os commits
+            // Get the commits
             const baseCommit = await rest.git.getCommit({
               owner,
               repo,
@@ -259,21 +259,21 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
               commit_sha: headCommitSha
             });
 
-            // Compare tree SHAs - duas tags que têm o mesmo tree SHA têm o mesmo estado do código
+            // Compare tree SHAs - two tags that have the same tree SHA have the same code state
             if (baseCommit.data.tree.sha === headCommit.data.tree.sha) {
-              info(`🔍 [CHANGELOG] Tags sequenciais têm trees idênticos: ${baseCommit.data.tree.sha}`);
+              info(`🔍 [CHANGELOG] Sequential tags have identical trees: ${baseCommit.data.tree.sha}`);
               return true;
             }
           }
         } catch (error) {
-          info(`🔍 [CHANGELOG] Erro ao comparar trees das tags: ${error instanceof Error ? error.message : String(error)}`);
+          info(`🔍 [CHANGELOG] Error comparing tag trees: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     }
 
-    // Verificação padrão para todas as referências
+    // Standard check for all references
     try {
-      // Primeira abordagem: Verificar diretamente a comparação via API
+      // First approach: Check comparison directly via API
       const compareResult = await rest.repos.compareCommits({
         owner,
         repo,
@@ -281,33 +281,33 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
         head: headRef,
       });
 
-      // Se não há diferenças, a API diz que ahead_by = 0 e behind_by = 0
+      // If no differences, API says ahead_by = 0 and behind_by = 0
       if (compareResult.data.ahead_by === 0 && compareResult.data.behind_by === 0) {
-        info(`🔍 [CHANGELOG] A API do GitHub confirma que as referências são idênticas (ahead_by = 0, behind_by = 0)`);
+        info(`🔍 [CHANGELOG] GitHub API confirms references are identical (ahead_by = 0, behind_by = 0)`);
         return true;
       }
 
-      // Se há apenas merges ou commits vazios, pode ter ahead_by > 0 mas files_count = 0
+      // If only merges or empty commits, might have ahead_by > 0 but files_count = 0
       if (compareResult.data.files?.length === 0) {
-        info(`🔍 [CHANGELOG] A comparação não mostra alterações em arquivos (files_count = 0)`);
+        info(`🔍 [CHANGELOG] Comparison shows no file changes (files_count = 0)`);
         return true;
       }
 
-      // Se o status é identical, são idênticas (mesmo que ahead_by seja > 0)
+      // If status is identical, they are identical (even if ahead_by > 0)
       if (compareResult.data.status === "identical") {
-        info(`🔍 [CHANGELOG] A API retorna status "identical"`);
+        info(`🔍 [CHANGELOG] API returns "identical" status`);
         return true;
       }
     } catch (error) {
-      info(`🔍 [CHANGELOG] Erro ao comparar referências via API: ${error instanceof Error ? error.message : String(error)}`);
+      info(`🔍 [CHANGELOG] Error comparing references via API: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    // Segunda abordagem: Comparar tree SHAs diretamente
+    // Second approach: Compare tree SHAs directly
     try {
-      // Resolver referências para obter os SHAs reais
+      // Resolve references to get the real SHAs
       const resolveRef = async (ref: string) => {
         try {
-          // Tentar como tag
+          // Try as tag
           const tagRef = await rest.git.getRef({
             owner,
             repo,
@@ -316,7 +316,7 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
 
           if (tagRef) return tagRef;
 
-          // Tentar como branch
+          // Try as branch
           const branchRef = await rest.git.getRef({
             owner,
             repo,
@@ -325,7 +325,7 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
 
           if (branchRef) return branchRef;
 
-          // Tentar como SHA direto
+          // Try as direct SHA
           return rest.git.getCommit({
             owner,
             repo,
@@ -340,17 +340,17 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
       const headRefData = await resolveRef(headRef);
 
       if (baseRefData && headRefData) {
-        // Se ambos são refs, comparar os SHA para que apontam
+        // If both are refs, compare the SHAs they point to
         if ('object' in baseRefData.data && 'object' in headRefData.data) {
           const baseSha = baseRefData.data.object.sha;
           const headSha = headRefData.data.object.sha;
 
           if (baseSha === headSha) {
-            info(`🔍 [CHANGELOG] Refs apontam para o mesmo SHA: ${baseSha}`);
+            info(`🔍 [CHANGELOG] Refs point to the same SHA: ${baseSha}`);
             return true;
           }
 
-          // Se são objetos diferentes, verificar seus trees
+          // If different objects, check their trees
           const baseCommit = await rest.git.getCommit({
             owner,
             repo,
@@ -365,20 +365,20 @@ async function areTagsEffectivelyIdentical(baseRef: string, headRef: string): Pr
 
           if (baseCommit && headCommit &&
               baseCommit.data.tree.sha === headCommit.data.tree.sha) {
-            info(`🔍 [CHANGELOG] Commits têm o mesmo tree SHA: ${baseCommit.data.tree.sha}`);
+            info(`🔍 [CHANGELOG] Commits have the same tree SHA: ${baseCommit.data.tree.sha}`);
             return true;
           }
         }
       }
     } catch (error) {
-      info(`🔍 [CHANGELOG] Erro ao comparar trees: ${error instanceof Error ? error.message : String(error)}`);
+      info(`🔍 [CHANGELOG] Error comparing trees: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    info(`🔍 [CHANGELOG] As referências são diferentes após múltiplas verificações`);
+    info(`🔍 [CHANGELOG] References are different after multiple checks`);
     return false;
   } catch (error) {
-    info(`🔍 [CHANGELOG] Erro global ao verificar identidade: ${error instanceof Error ? error.message : String(error)}`);
-    return false; // Em caso de erro, assume que são diferentes por segurança
+    info(`🔍 [CHANGELOG] Global error when checking identity: ${error instanceof Error ? error.message : String(error)}`);
+    return false; // In case of error, assume they're different for safety
   }
 }
 
@@ -402,38 +402,38 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
   let targetSha = lastSha;
   let initialAttemptWithLastSha = !!lastSha;
   let retryCount = 0;
-  const MAX_RETRIES = 5; // Limite para evitar loops infinitos
+  const MAX_RETRIES = 5; // Limit to avoid infinite loops
 
-  // Continue a iterar quando as tags são efetivamente idênticas
+  // Continue iterating when tags are effectively identical
   while (retryCount < MAX_RETRIES) {
-    info(`🔍 [CHANGELOG] Tentativa ${retryCount + 1} de gerar changelog${targetSha ? ` a partir de ${targetSha.substring(0, 7)}` : ''}`);
+    info(`🔍 [CHANGELOG] Attempt ${retryCount + 1} to generate changelog${targetSha ? ` starting from ${targetSha.substring(0, 7)}` : ''}`);
 
     let commits: any[] = [];
 
     if (targetSha) {
       const currentSha = sha();
 
-      // Verifica se as tags são efetivamente idênticas
+      // Check if tags are effectively identical
       if (await areTagsEffectivelyIdentical(targetSha, currentSha)) {
-        info(`🔍 [CHANGELOG] As tags são efetivamente idênticas: ${targetSha.substring(0, 7)} e ${currentSha.substring(0, 7)}`);
+        info(`🔍 [CHANGELOG] Tags are effectively identical: ${targetSha.substring(0, 7)} and ${currentSha.substring(0, 7)}`);
 
-        // Encontra a próxima tag no histórico para continuar a iteração
+        // Find the next tag in history to continue iteration
         const currentTagIndex = tags.findIndex(tag => tag.commit.sha === currentSha);
         const previousTagIndex = tags.findIndex(tag => tag.commit.sha === targetSha);
 
-        // Se ambas as tags estão no histórico e são próximas, continue para a próxima
+        // If both tags are in history and are close, continue to the next
         if (currentTagIndex >= 0 && previousTagIndex >= 0) {
           const nextTagIndex = Math.max(previousTagIndex, currentTagIndex) + 1;
 
           if (nextTagIndex < tags.length) {
             targetSha = tags[nextTagIndex].commit.sha;
-            info(`🔍 [CHANGELOG] Continuando para a próxima tag: ${tags[nextTagIndex].name} (${targetSha.substring(0, 7)})`);
+            info(`🔍 [CHANGELOG] Continuing to next tag: ${tags[nextTagIndex].name} (${targetSha.substring(0, 7)})`);
             retryCount++;
             continue;
           }
         }
 
-        // Se não encontrarmos uma próxima tag, tentamos usar o commit pai
+        // If we can't find a next tag, try using the parent commit
         try {
           const commit = await rest.git.getCommit({
             owner,
@@ -443,19 +443,19 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
 
           if (commit.data.parents.length > 0) {
             targetSha = commit.data.parents[0].sha;
-            info(`🔍 [CHANGELOG] Continuando para o commit pai: ${targetSha.substring(0, 7)}`);
+            info(`🔍 [CHANGELOG] Continuing to parent commit: ${targetSha.substring(0, 7)}`);
             retryCount++;
             continue;
           }
         } catch (error) {
-          info(`🔍 [CHANGELOG] Erro ao obter commit pai: ${error instanceof Error ? error.message : String(error)}`);
+          info(`🔍 [CHANGELOG] Error getting parent commit: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
 
-      info(`🔍 [CHANGELOG] Obtendo commits entre ${targetSha.substring(0, 7)} e ${currentSha.substring(0, 7)}`);
+      info(`🔍 [CHANGELOG] Getting commits between ${targetSha.substring(0, 7)} and ${currentSha.substring(0, 7)}`);
 
       try {
-        // Corrigido: Ajuste para trabalhar com a nova tipagem da resposta
+        // Fixed: Adjusted to work with the new response type
         const compareResult = await rest.repos.compareCommits({
           owner,
           repo,
@@ -464,10 +464,10 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
           per_page: 100,
         });
 
-        // Acessa commits diretamente do objeto de resposta
+        // Access commits directly from response object
         commits = compareResult.data.commits;
       } catch (error) {
-        // Se falhar com o lastSha, tente com todos os commits
+        // If failed with lastSha, try with all commits
         warning(`Failed to compare commits: ${error instanceof Error ? error.message : String(error)}`);
 
         if (initialAttemptWithLastSha) {
@@ -480,7 +480,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
         throw error;
       }
     } else {
-      info("🔍 [CHANGELOG] Obtendo todos os commits (nenhum SHA de referência fornecido)");
+      info("🔍 [CHANGELOG] Getting all commits (no reference SHA provided)");
 
       const response = await paginate(rest.repos.listCommits, {
         owner,
@@ -581,41 +581,41 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
       if (reference.length > 0) log.references.push(reference.join(" "));
     }
 
-    // Se nenhum commit foi processado, tente novamente com a próxima tag se estivermos em retry mode
+    // If no commits were processed, try again with the next tag if we're in retry mode
     if (processedCommitCount === 0 && retryCount > 0 && retryCount < MAX_RETRIES) {
-      // Tenta encontrar uma tag anterior para tentar novamente
+      // Try to find a previous tag to retry
       const currentTagIndex = tags.findIndex(tag => tag.commit.sha === targetSha);
 
       if (currentTagIndex >= 0 && currentTagIndex + 1 < tags.length) {
         targetSha = tags[currentTagIndex + 1].commit.sha;
-        info(`🔍 [CHANGELOG] Sem commits processados, tentando com a próxima tag: ${tags[currentTagIndex + 1].name} (${targetSha.substring(0, 7)})`);
+        info(`🔍 [CHANGELOG] No processed commits, trying with next tag: ${tags[currentTagIndex + 1].name} (${targetSha.substring(0, 7)})`);
         retryCount++;
         continue;
       }
     }
 
-    // Se nenhum commit foi processado, retornar mensagem indicando sem alterações significativas
+    // If no commits were processed, return message indicating no significant changes
     if (processedCommitCount === 0 && lastSha) {
-      info(`🔍 [CHANGELOG] Nenhuma alteração significativa encontrada para o changelog (todos os commits foram filtrados)`);
+      info(`🔍 [CHANGELOG] No significant changes found for changelog (all commits were filtered)`);
       return "## No significant changes in this release\n\n**Full Changelog**: " +
             `${url}/compare/${encodeURIComponent(lastSha)}...${encodeURIComponent(sha())}`;
     }
 
-    info(`🔍 [CHANGELOG] Geração do changelog concluída com método legado`);
-    info(`🔍 [CHANGELOG] Commits analisados: ${commitCount}`);
-    info(`🔍 [CHANGELOG] Commits incluídos no changelog: ${processedCommitCount}`);
+    info(`🔍 [CHANGELOG] Changelog generation completed with legacy method`);
+    info(`🔍 [CHANGELOG] Commits analyzed: ${commitCount}`);
+    info(`🔍 [CHANGELOG] Commits included in changelog: ${processedCommitCount}`);
 
     if (lastSha) {
-      info(`🔍 [CHANGELOG] Comparação: De SHA ${lastSha.substring(0, 7)} para ${sha().substring(0, 7)}`);
+      info(`🔍 [CHANGELOG] Comparison: From SHA ${lastSha.substring(0, 7)} to ${sha().substring(0, 7)}`);
     } else {
-      info(`🔍 [CHANGELOG] Nenhum SHA anterior encontrado para comparação, incluídos todos os commits acessíveis`);
+      info(`🔍 [CHANGELOG] No previous SHA found for comparison, included all accessible commits`);
     }
 
     return formatChangelog(typeGroups, typeMap, defaultType);
   }
 
-  // Se chegamos aqui, atingimos o limite de tentativas
-  info(`🔍 [CHANGELOG] Atingido limite de ${MAX_RETRIES} tentativas de gerar um changelog válido`);
+  // If we got here, we reached the retry limit
+  info(`🔍 [CHANGELOG] Reached limit of ${MAX_RETRIES} attempts to generate a valid changelog`);
   return "## Unable to generate changelog after multiple attempts\n\n" +
          "No significant changes could be found between the compared versions after multiple attempts.";
 }
