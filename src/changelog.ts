@@ -4,7 +4,7 @@
  * Copyright (c) 2020-2023 Ardalan Amini
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation (the "Software"), to deal
+ * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
@@ -23,7 +23,7 @@
  *
  */
 
-import { debug, info } from "@actions/core";
+import { debug, info, warning } from "@actions/core";
 import {
   commitTypes,
   defaultCommitType,
@@ -124,12 +124,18 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
   let commitCount = 0;
   let processedCommitCount = 0;
 
+  // Return empty changelog if the two SHAs are the same
+  if (lastSha === sha()) {
+    info(`🔍 [CHANGELOG] Current SHA and previous SHA are the same, no changes to include in changelog`);
+    return "## No changes in this release\n\n**No changes detected between these releases.**";
+  }
+
   // If we have a lastSha, use compareCommits to get commits between the two SHAs
   if (lastSha) {
     info(`🔍 [CHANGELOG] Using compare API to fetch commits between ${lastSha.substring(0, 7)} and ${sha().substring(0, 7)}`);
 
     try {
-      // Get commits using the compare API - this ensures we only get commits between the two SHAs
+      // First check if there are any changes between the two SHAs
       const compareResult = await rest.repos.compareCommits({
         owner,
         repo,
@@ -137,19 +143,49 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
         head: sha(),
       });
 
+      info(`🔍 [CHANGELOG] Compare API status: ${compareResult.status}, total commits: ${compareResult.data.total_commits}, ahead by: ${compareResult.data.ahead_by}, behind by: ${compareResult.data.behind_by}`);
+
+      // If there are no commits ahead, there are no changes to include in the changelog
+      if (compareResult.data.ahead_by === 0) {
+        info(`🔍 [CHANGELOG] No commits ahead of the base SHA, no changes to include in changelog`);
+        return "## No changes in this release\n\n**No changes detected between these releases.**";
+      }
+
+      if (compareResult.data.commits.length === 0) {
+        info(`🔍 [CHANGELOG] Compare API returned no commits between the SHAs, even though ahead_by > 0`);
+        info(`🔍 [CHANGELOG] This is unusual and may indicate an issue with the GitHub API response`);
+        warning(`Compare API reported ${compareResult.data.ahead_by} commits ahead but returned 0 commits. Check GitHub API response.`);
+        return "## No significant changes detected\n\n**Full Changelog**: " +
+               `${url}/compare/${encodeURIComponent(lastSha)}...${encodeURIComponent(sha())}`;
+      }
+
       info(`🔍 [CHANGELOG] Found ${compareResult.data.commits.length} commits between the two SHAs`);
+
+      // Track commits that should be excluded from the changelog
+      let mergeCommits = 0;
+      let emptyDescriptionCommits = 0;
+      let ignoredCommits = 0;
 
       // Process each commit from the comparison
       for (const commit of compareResult.data.commits) {
         commitCount++;
 
         const message = commit.commit.message.split("\n")[0];
+        const commitSHA = commit.sha.substring(0, 7);
         debug(`commit message -> ${ message }`);
+
+        // Skip merge commits
+        if (message.startsWith("Merge ") || message.includes(" into ") || message.includes("//github.com")) {
+          info(`🔍 [CHANGELOG] Commit ${commitSHA} skipped: Merge commit`);
+          mergeCommits++;
+          continue;
+        }
 
         let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
 
         if (!description) {
-          info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: No description`);
+          info(`🔍 [CHANGELOG] Commit ${commitSHA} skipped: No description`);
+          emptyDescriptionCommits++;
           continue;
         }
 
@@ -157,7 +193,8 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
         flag = trim(flag);
 
         if (flag === "ignore") {
-          info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: Flagged as ignore`);
+          info(`🔍 [CHANGELOG] Commit ${commitSHA} skipped: Flagged as ignore`);
+          ignoredCommits++;
           continue;
         }
 
@@ -168,7 +205,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
 
         // Logging for every 10th commit to avoid excessive logs
         if (processedCommitCount % 10 === 0 || processedCommitCount < 5) {
-          info(`🔍 [CHANGELOG] Processing commit ${commit.sha.substring(0, 7)}: ${type}${scope ? `(${scope})` : ""}: ${description}`);
+          info(`🔍 [CHANGELOG] Processing commit ${commitSHA}: ${type}${scope ? `(${scope})` : ""}: ${description}`);
         }
 
         let typeGroup = typeGroups.find(record => record.type === type);
@@ -210,7 +247,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
         const reference: string[] = [];
 
         if (pr && shouldIncludePRLinks) reference.push(shouldUseGithubAutolink ? `#${ pr }` : `[#${ pr }](${ url }/issues/${ pr })`);
-        else if (shouldIncludeCommitLinks) reference.push(shouldUseGithubAutolink ? commit.sha : `\`[${ commit.sha }](${ url }/commit/${ commit.sha })\``);
+        else if (shouldIncludeCommitLinks) reference.push(shouldUseGithubAutolink ? commit.sha : `[${ commit.sha.substring(0, 7) }](${ url }/commit/${ commit.sha })`);
 
         const username = commit.author?.login;
 
@@ -233,8 +270,19 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
         if (reference.length > 0) log.references.push(reference.join(" "));
       }
 
-      // If the compare API returned commits, use them and return immediately
-      info(`🔍 [CHANGELOG] Successfully used compare API to generate changelog with ${processedCommitCount} commits`);
+      // Log statistics about skipped commits
+      info(`🔍 [CHANGELOG] Merge commits skipped: ${mergeCommits}`);
+      info(`🔍 [CHANGELOG] Commits with empty descriptions skipped: ${emptyDescriptionCommits}`);
+      info(`🔍 [CHANGELOG] Commits flagged as ignore skipped: ${ignoredCommits}`);
+
+      // If no commits were processed, return a message indicating no significant changes
+      if (processedCommitCount === 0) {
+        info(`🔍 [CHANGELOG] No significant changes found for the changelog (all commits were filtered out)`);
+        return "## No significant changes in this release\n\n**Full Changelog**: " +
+               `${url}/compare/${encodeURIComponent(lastSha)}...${encodeURIComponent(sha())}`;
+      }
+
+      info(`🔍 [CHANGELOG] Successfully used compare API to generate changelog`);
       info(`🔍 [CHANGELOG] Changelog generation complete`);
       info(`🔍 [CHANGELOG] Commits analyzed: ${commitCount}`);
       info(`🔍 [CHANGELOG] Commits included in changelog: ${processedCommitCount}`);
@@ -272,8 +320,13 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
       }
 
       const message = commit.commit.message.split("\n")[0];
-
       debug(`commit message -> ${ message }`);
+
+      // Skip merge commits
+      if (message.startsWith("Merge ") || message.includes(" into ") || message.includes("//github.com")) {
+        info(`🔍 [CHANGELOG] Commit ${commit.sha.substring(0, 7)} skipped: Merge commit`);
+        continue;
+      }
 
       let { type, scope, description, pr, flag, breaking } = parseCommitMessage(message);
 
@@ -340,7 +393,7 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
       const reference: string[] = [];
 
       if (pr && shouldIncludePRLinks) reference.push(shouldUseGithubAutolink ? `#${ pr }` : `[#${ pr }](${ url }/issues/${ pr })`);
-      else if (shouldIncludeCommitLinks) reference.push(shouldUseGithubAutolink ? commit.sha : `\`[${ commit.sha }](${ url }/commit/${ commit.sha })\``);
+      else if (shouldIncludeCommitLinks) reference.push(shouldUseGithubAutolink ? commit.sha : `[${ commit.sha.substring(0, 7) }](${ url }/commit/${ commit.sha })`);
 
       const username = commit.author?.login;
 
@@ -362,6 +415,13 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
 
       if (reference.length > 0) log.references.push(reference.join(" "));
     }
+  }
+
+  // If no commits were processed, return a message indicating no significant changes
+  if (processedCommitCount === 0 && lastSha) {
+    info(`🔍 [CHANGELOG] No significant changes found for the changelog (all commits were filtered out)`);
+    return "## No significant changes in this release\n\n**Full Changelog**: " +
+           `${url}/compare/${encodeURIComponent(lastSha)}...${encodeURIComponent(sha())}`;
   }
 
   info(`🔍 [CHANGELOG] Changelog generation complete with legacy method`);
