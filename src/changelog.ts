@@ -106,6 +106,50 @@ function formatChangelog(typeGroups: TypeGroupI[], typeMap: Record<string, strin
   return changelog.join("\n");
 }
 
+/**
+ * Verifica se dois commits apontam para a mesma árvore de código
+ * Isso é necessário porque a API de comparação do GitHub pode indicar diferenças
+ * mesmo quando a interface visual do GitHub mostra que são idênticos
+ */
+async function areCommitsEffectivelyIdentical(lastSha: string, currentSha: string): Promise<boolean> {
+  try {
+    const { rest } = octokit();
+    const { owner, repo } = repository();
+
+    // Obter detalhes do commit anterior para verificar seu tree SHA
+    const previousCommitData = await rest.git.getCommit({
+      owner,
+      repo,
+      commit_sha: lastSha,
+    });
+
+    // Obter detalhes do commit atual para verificar seu tree SHA
+    const currentCommitData = await rest.git.getCommit({
+      owner,
+      repo,
+      commit_sha: currentSha,
+    });
+
+    // Compara os tree SHAs - se forem iguais, os commits têm o mesmo conteúdo
+    const previousTreeSha = previousCommitData.data.tree.sha;
+    const currentTreeSha = currentCommitData.data.tree.sha;
+
+    const identical = previousTreeSha === currentTreeSha;
+
+    if (identical) {
+      info(`🔍 [CHANGELOG] Commits tree verification: previous (${previousTreeSha}) and current (${currentTreeSha}) tree SHAs are identical`);
+      info(`🔍 [CHANGELOG] Despite API differences, the actual code trees are the same`);
+    } else {
+      info(`🔍 [CHANGELOG] Commits tree verification: previous (${previousTreeSha}) and current (${currentTreeSha}) tree SHAs differ`);
+    }
+
+    return identical;
+  } catch (error) {
+    info(`🔍 [CHANGELOG] Error comparing commit trees: ${error instanceof Error ? error.message : String(error)}`);
+    return false; // Em caso de erro, assumir que são diferentes
+  }
+}
+
 export async function generateChangelog(lastSha?: string): Promise<string> {
   const { paginate, rest } = octokit();
   const { owner, repo, url } = repository();
@@ -135,6 +179,13 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
     info(`🔍 [CHANGELOG] Using compare API to fetch commits between ${lastSha.substring(0, 7)} and ${sha().substring(0, 7)}`);
 
     try {
+      // Verificar se os dois commits têm o mesmo conteúdo (tree)
+      const identical = await areCommitsEffectivelyIdentical(lastSha, sha());
+      if (identical) {
+        info(`🔍 [CHANGELOG] Releases are identical in content (same tree hash), no changes to include in changelog`);
+        return "## No changes in this release\n\n**No changes detected between these releases.**";
+      }
+
       // First check if there are any changes between the two SHAs
       const compareResult = await rest.repos.compareCommits({
         owner,
@@ -144,6 +195,13 @@ export async function generateChangelog(lastSha?: string): Promise<string> {
       });
 
       info(`🔍 [CHANGELOG] Compare API status: ${compareResult.status}, total commits: ${compareResult.data.total_commits}, ahead by: ${compareResult.data.ahead_by}, behind by: ${compareResult.data.behind_by}`);
+
+      // Se a API diz que estamos à frente, mas o "total_commits" for zero, algo está errado
+      if (compareResult.data.ahead_by > 0 && compareResult.data.total_commits === 0) {
+        info(`🔍 [CHANGELOG] Inconsistent API response: ahead_by > 0 but total_commits = 0`);
+        info(`🔍 [CHANGELOG] Assuming no significant changes`);
+        return "## No changes in this release\n\n**No significant changes detected between these releases.**";
+      }
 
       // If there are no commits ahead, there are no changes to include in the changelog
       if (compareResult.data.ahead_by === 0) {
